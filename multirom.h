@@ -120,6 +120,9 @@ struct multirom_status
     char *curr_rom_part;
     struct fstab *fstab;
     struct rcadditions rc;
+
+    // Runtime variables
+    char* auto_boot_name;
 };
 
 int multirom(const char *rom_to_boot);

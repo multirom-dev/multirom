@@ -592,6 +592,7 @@ int multirom_default_status(struct multirom_status *s)
     s->enable_kmsg_logging = 0;
     s->rotation = MULTIROM_DEFAULT_ROTATION;
     s->anim_duration_coef = 1.f;
+    s->auto_boot_name = NULL;
 
     s->fstab = fstab_auto_load();
     if(!s->fstab)
@@ -705,6 +706,7 @@ int multirom_load_status(struct multirom_status *s)
     char line[1024];
     char current_rom[256] = { 0 };
     char auto_boot_rom[256] = { 0 };
+    int auto_boot_len;
 
     char name[64];
     char *pch;
@@ -754,24 +756,61 @@ int multirom_load_status(struct multirom_status *s)
 
     fclose(f);
 
-    // find USB drive if we're booting from it
-    if(s->curr_rom_part) // && s->is_second_boot)
+    // Find USB drive if we're booting from it
+    auto_boot_len = strlen(s->auto_boot_name);
+    if (s->curr_rom_part || auto_boot_len > 0)
     {
+        struct multirom_rom *r = NULL;
         struct usb_partition *p = NULL;
         int tries = 0;
-        while(!p && tries < 10)
+        int i;
+
+        // Search curr_rom_part
+        while (s->curr_rom_part && !p && tries < 10)
         {
             multirom_update_partitions(s);
             p = multirom_get_partition(s, s->curr_rom_part);
 
-            if(p)
+            if (p)
             {
+                INFO("current part '%s' found\n", s->curr_rom_part);
                 multirom_scan_partition_for_roms(s, p);
                 break;
             }
 
             ++tries;
-            ERROR("part %s not found, waiting 1s (%d)\n", s->curr_rom_part, tries);
+            ERROR("part '%s' not found, waiting 1s (%d)\n", s->curr_rom_part, tries);
+            sleep(1);
+        }
+
+        // Search auto_boot_rom
+        tries = 0;
+        while (auto_boot_len > 0 && !r && tries < 10)
+        {
+            multirom_update_partitions(s);
+            for (i = 0; s->roms && s->roms[i];)
+            {
+                if (s->roms[i]->partition)
+                {
+                    list_rm_at(&s->roms, i, &multirom_free_rom);
+                    i = 0;
+                }
+                else ++i;
+            }
+            for (i = 0; s->partitions && s->partitions[i]; ++i)
+            {
+                multirom_scan_partition_for_roms(s, s->partitions[i]);
+            }
+
+            r = multirom_get_rom(s, s->auto_boot_name, NULL);
+            if (r)
+            {
+                INFO("autoboot rom '%s' found\n", s->auto_boot_name);
+                break;
+            }
+
+            ++tries;
+            ERROR("rom '%s' not found, waiting 1s (%d)\n", s->auto_boot_name, tries);
             sleep(1);
         }
     }
@@ -781,6 +820,9 @@ int multirom_load_status(struct multirom_status *s)
     {
         ERROR("Failed to select current rom (%s, part %s), using Internal!\n", current_rom, s->curr_rom_part);
         s->current_rom = multirom_get_internal(s);
+        if (s->curr_rom_part) {
+            free(s->curr_rom_part);
+        }
         s->curr_rom_part = NULL;
         if(!s->current_rom)
         {
@@ -832,7 +874,7 @@ int multirom_save_status(struct multirom_status *s)
         return -1;
     }
 
-    multirom_fixup_rom_name(s->auto_boot_rom, auto_boot_name, "");
+    multirom_fixup_rom_name(s->auto_boot_rom, auto_boot_name, s->auto_boot_name);
     multirom_fixup_rom_name(s->current_rom, current_name, INTERNAL_ROM_NAME);
 
     fprintf(f, "current_rom=%s\n", current_name);
@@ -891,9 +933,11 @@ void multirom_dump_status(struct multirom_status *s)
     INFO("  hide_internal=%d\n", s->hide_internal);
     INFO("  int_display_name=%s\n", s->int_display_name ? s->int_display_name : "NULL");
     INFO("  auto_boot_seconds=%d\n", s->auto_boot_seconds);
-    INFO("  auto_boot_rom=%s\n", s->auto_boot_rom ? s->auto_boot_rom->name : "NULL");
+    INFO("  auto_boot_rom=%s\n", s->auto_boot_rom ? s->auto_boot_rom->name : s->auto_boot_name);
     INFO("  auto_boot_type=%d\n", s->auto_boot_type);
     INFO("  curr_rom_part=%s\n", s->curr_rom_part ? s->curr_rom_part : "NULL");
+    INFO("\n");
+    INFO("  auto_boot_name=%s\n", s->auto_boot_name);
     INFO("\n");
 
     int i;
@@ -913,6 +957,7 @@ void multirom_free_status(struct multirom_status *s)
 {
     list_clear(&s->partitions, &multirom_destroy_partition);
     list_clear(&s->roms, &multirom_free_rom);
+    free(s->auto_boot_name);
     free(s->curr_rom_part);
     free(s->int_display_name);
     if (s->fstab) fstab_destroy(s->fstab);
@@ -930,7 +975,7 @@ void multirom_find_usb_roms(struct multirom_status *s)
 {
     char auto_boot_name[MAX_ROM_NAME_LEN+1];
     char current_name[MAX_ROM_NAME_LEN+1];
-    multirom_fixup_rom_name(s->auto_boot_rom, auto_boot_name, "");
+    multirom_fixup_rom_name(s->auto_boot_rom, auto_boot_name, s->auto_boot_name);
     multirom_fixup_rom_name(s->current_rom, current_name, INTERNAL_ROM_NAME);
 
     // remove USB roms
