@@ -68,7 +68,6 @@ int main(int argc, const char *argv[])
             // can manipulate them
 
             int i;
-            int active = 0;
             struct multirom_status s;
             memset(&s, 0, sizeof(struct multirom_status));
 
@@ -76,21 +75,16 @@ int main(int argc, const char *argv[])
 
             for(i = 0; s.roms && s.roms[i]; ++i)
             {
-                if(s.current_rom)
-                    active = (s.roms[i] == s.current_rom);
-
                 if (!s.roms[i]->partition)
                 {
                     // Internal ROMs
-                    printf("ROM:%d name=%s base=%s icon=%s\n",
-                        active,
+                    printf("ROM: name=%s base=%s icon=%s\n",
                         s.roms[i]->name, s.roms[i]->base_path, s.roms[i]->icon_path);
                 }
                 else
                 {
                     // External ROMs
-                    printf("ROM:%d name=%s base=%s icon=%s part_name=%s part_mount=%s part_uuid=%s part_fs=%s\n",
-                        active,
+                    printf("ROM: name=%s base=%s icon=%s part_name=%s part_mount=%s part_uuid=%s part_fs=%s\n",
                         s.roms[i]->name, s.roms[i]->base_path, s.roms[i]->icon_path,
                         s.roms[i]->partition->name, s.roms[i]->partition->mount_path, s.roms[i]->partition->uuid, s.roms[i]->partition->fs);
                 }
