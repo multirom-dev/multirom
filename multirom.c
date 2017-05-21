@@ -1771,11 +1771,16 @@ int multirom_create_media_link(struct multirom_status *s)
         if(!media_new) from = 0;
         else           from = 1;
     }
-    else if(api_level >= 17)
+    else if(api_level <= 22)
     {
         from = 0;
         if(!media_new) to = 3;
         else           to = 2;
+    }
+    else
+    {
+        from = 0;
+        to = 2;
     }
 
     ERROR("Making media dir: api %d, media_new %d, %s to %s\n", api_level, media_new, paths[from], paths[to]);
