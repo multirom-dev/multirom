@@ -76,6 +76,9 @@ static char kexec_path[64] = { 0 };
 static char ntfs_path[64] = { 0 };
 static char exfat_path[64] = { 0 };
 static char partition_dir[64] = { 0 };
+static char external_mount_fs[5] = { 0 };
+static char external_mount_part[256] = { 0 };
+static char external_mount_path[256] = { 0 };
 
 static volatile int run_usb_refresh = 0;
 static pthread_t usb_refresh_thread;
@@ -1515,6 +1518,24 @@ int multirom_prep_android_mounts(struct multirom_status *s, struct multirom_rom 
     struct fstab_part *fw_part = NULL;
     int res = -1;
 
+    // Detect booting from an unmountable external partition
+    //  * Only external partitions have a partition defined
+    //  * Detect ext4 or f2fs as external unmountable because of vold
+    external_mount_part[0] = 0;
+    external_mount_path[0] = 0;
+    if (rom->partition && (strcmp(rom->partition->fs, "ext4") == 0 ||
+            strcmp(rom->partition->fs, "f2fs") == 0))
+    {
+        snprintf(external_mount_part, sizeof(external_mount_part),
+                "/dev/block/%s", rom->partition->name);
+        snprintf(external_mount_path, sizeof(external_mount_path),
+                "/mnt/mrom/%s", rom->partition->name);
+        snprintf(external_mount_fs, sizeof(external_mount_fs),
+                "%4s", rom->partition->fs);
+        ERROR("Booting from external unmountable partition: '%s', %s\n",
+                external_mount_part, external_mount_fs);
+    }
+
     sprintf(path, "%s/firmware.img", rom->base_path);
     has_fw = (access(path, R_OK) >= 0);
 
@@ -1550,7 +1571,7 @@ int multirom_prep_android_mounts(struct multirom_status *s, struct multirom_rom 
     }
     closedir(d);
 
-    if(multirom_process_android_fstab(fstab_name, has_fw, &fw_part) != 0)
+    if (multirom_process_android_fstab(fstab_name, has_fw, &fw_part, s) != 0)
         goto exit;
 
     unlink("/cache");
@@ -1641,7 +1662,8 @@ exit:
     return res;
 }
 
-int multirom_process_android_fstab(char *fstab_name, int has_fw, struct fstab_part **fw_part)
+int multirom_process_android_fstab(char *fstab_name, int has_fw,
+        struct fstab_part **fw_part, struct multirom_status *s)
 {
     int res = -1;
 
@@ -1734,6 +1756,52 @@ int multirom_process_android_fstab(char *fstab_name, int has_fw, struct fstab_pa
         mkdir("/dummy_tmpfs", 0644);
     }
 
+    // Booting from an unmountable external partition
+    if (external_mount_path[0] != 0)
+    {
+        // Access MultiROM fstab as second mount path reference
+        struct fstab_part* ext_part = NULL;
+        for (int i = 0; i < s->fstab->count; ++i)
+        {
+            if (strcmp(s->fstab->parts[i]->device, external_mount_part) == 0)
+            {
+                ext_part = s->fstab->parts[i];
+                break;
+            }
+        }
+
+        // Handle external MicroSD boot for voldmanaged removal
+        if (strstr(external_mount_part, "mmcblk1p1") != NULL ||
+                ext_part && strstr(ext_part->path, "external_sd") != NULL)
+        {
+            ERROR("Searching for voldmanaged 'sdcard1' flag in fstab\n");
+            for (int i = 0; i < tab->count; ++i)
+            {
+                if (strstr(tab->parts[i]->options2, "voldmanaged=sdcard1") != NULL)
+                {
+                    ERROR("Removing '%s' from fstab to avoid 'voldmanaged'\n",
+                            tab->parts[i]->device);
+                    tab->parts[i]->disabled = 1;
+                }
+            }
+        }
+        // Handle external USB boot for voldmanaged removal
+        else if (strstr(external_mount_part, "usb") != NULL ||
+                ext_part && strstr(ext_part->path, "usb") != NULL)
+        {
+            ERROR("Searching for voldmanaged 'usb' flag in fstab\n");
+            for (int i = 0; i < tab->count; ++i)
+            {
+                if (strstr(tab->parts[i]->options2, "voldmanaged=usb") != NULL)
+                {
+                    ERROR("Removing '%s' from fstab to avoid 'voldmanaged'\n",
+                            tab->parts[i]->device);
+                    tab->parts[i]->disabled = 1;
+                }
+            }
+        }
+    }
+
     if(fstab_save(tab, fstab_name) == 0)
         res = 0;
 
@@ -1819,6 +1887,56 @@ int multirom_create_media_link(struct multirom_status *s)
         // We need to set SELinux context for this file in case it was created by multirom,
         // but can't do it here because selinux was not initialized
         rcadditions_append_trigger(&s->rc, "post-fs-data", "    restorecon " LAYOUT_VERSION "\n");
+    }
+
+    // Booting from an unmountable external partition
+    if (external_mount_path[0] != 0)
+    {
+        // Select internal media path for 'external_multirom'
+        char path_ext[256];
+        if (stat("/data/media/0", &info) >= 0)
+        {
+            snprintf(path_ext, sizeof(path_ext),
+                    "/data/media/0/external_multirom");
+        }
+        else
+        {
+            snprintf(path_ext, sizeof(path_ext),
+                    "/data/media/external_multirom");
+        }
+
+        INFO("Preparing to mount '%s' to '%s'\n", external_mount_path,
+                path_ext);
+
+        // Create and set accesses to 'external_multirom' on internal media
+        mkdir(path_ext, 0770);
+        chmod(path_ext, 0770);
+
+        // Bind external partition to internal media 'external_multirom'
+        if (mount(external_mount_path, path_ext, external_mount_fs, MS_BIND,
+                "") < 0)
+        {
+            ERROR("Failed to bind '%s' (%s) to '%s': %d (%s)\n",
+                    external_mount_path, external_mount_fs, path_ext, errno,
+                        strerror(errno));
+            external_mount_part[0] = 0;
+            external_mount_path[0] = 0;
+            return 0;
+        }
+
+        // Apply internal media owners for 'external_multirom'
+        unsigned int media_rw_id = decode_uid("media_rw");
+        if (media_rw_id != -1U)
+        {
+            chown(path_ext, (uid_t)media_rw_id, (gid_t)media_rw_id);
+        }
+
+        // Append init restorecon for 'external_multirom' context
+        char restorecon_ext[64];
+        snprintf(restorecon_ext, sizeof(restorecon_ext),
+                "    restorecon %s\n", path_ext);
+        rcadditions_append_trigger(&s->rc, "post-fs-data",
+                restorecon_ext);
     }
 
     return 0;
