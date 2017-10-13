@@ -120,6 +120,9 @@ struct multirom_status
     char *curr_rom_part;
     struct fstab *fstab;
     struct rcadditions rc;
+
+    // Runtime variables
+    char* auto_boot_name;
 };
 
 int multirom(const char *rom_to_boot);
@@ -173,6 +176,5 @@ int multirom_run_scripts(const char *type, struct multirom_rom *rom);
 int multirom_update_rd_trampoline(const char *path);
 char *multirom_find_fstab_in_rc(const char *rcfile);
 void multirom_find_rom_icon(struct multirom_rom *rom);
-void multirom_update_and_scan_for_external_roms(struct multirom_status *s, char *part_uuid);
-int multirom_apk_get_roms(struct multirom_status *s);
+
 #endif
