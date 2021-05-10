@@ -3,22 +3,27 @@ include $(CLEAR_VARS)
 
 LOCAL_C_INCLUDES += $(multirom_local_path) $(multirom_local_path)/lib
 LOCAL_SRC_FILES:= \
-    trampoline.c \
+    trampoline.cpp \
     devices.c \
     adb.c \
 
 LOCAL_MODULE:= trampoline
-LOCAL_MODULE_TAGS := eng
+LOCAL_MODULE_TAGS := optional
 
 LOCAL_MODULE_PATH := $(TARGET_ROOT_OUT)
 LOCAL_UNSTRIPPED_PATH := $(TARGET_ROOT_OUT_UNSTRIPPED)
-LOCAL_STATIC_LIBRARIES := libcutils libc libmultirom_static libbootimg
+LOCAL_STATIC_LIBRARIES := libcutils libc libmultirom_static libbootimg libselinux libext4_utils libkeyutils libbase liblog
+LOCAL_C_INCLUDES += system/extras/libbootimg/include
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 
 ifeq ($(MR_INIT_DEVICES),)
     $(info MR_INIT_DEVICES was not defined in device files!)
 endif
 LOCAL_SRC_FILES += ../../../../$(MR_INIT_DEVICES)
+
+ifneq ($(MR_EXTRA_FIRMWARE_DIR),)
+        LOCAL_CFLAGS += -DMR_EXTRA_FIRMWARE_DIR="\"$(MR_EXTRA_FIRMWARE_DIR)\""
+endif
 
 # for adb
 LOCAL_CFLAGS += -DPRODUCT_MODEL="\"$(PRODUCT_MODEL)\"" -DPRODUCT_MANUFACTURER="\"$(PRODUCT_MANUFACTURER)\""
@@ -62,5 +67,11 @@ endif
 ifeq ($(MR_USE_DEBUGFS_MOUNT),true)
     LOCAL_CFLAGS += -DMR_USE_DEBUGFS_MOUNT
 endif
+
+ifeq ($(MR_DEVICE_HAS_DRM_GRAPHICS),true)
+    LOCAL_CFLAGS += -DMR_DEVICE_HAS_DRM_GRAPHICS
+endif
+
+LOCAL_CPPFLAGS += $(LOCAL_CFLAGS)
 
 include $(BUILD_EXECUTABLE)

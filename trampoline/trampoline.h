@@ -15,9 +15,20 @@
  * along with MultiROM.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef PW_UI_H
-#define PW_UI_H
+#ifndef _TRAMPOLINE_H
+#define _TRAMPOLINE_H
 
-int pw_ui_run(int pwtype, bool isFbe);
+#include <sys/stat.h>
 
+#define EXEC_MASK (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH)
+#define REALDATA "/realdata"
+#define MULTIROM_BIN "multirom"
+#define BUSYBOX_BIN "busybox"
+#define KEEP_REALDATA "/dev/.keep_realdata"
+
+// Not defined in android includes?
+#ifndef MS_RELATIME
+#define MS_RELATIME (1<<21)
 #endif
+
+#endif // _TRAMPOLINE_H

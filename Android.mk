@@ -9,6 +9,7 @@ LOCAL_C_INCLUDES += $(multirom_local_path) \
     external/libpng \
     external/zlib \
     external/freetype/include \
+    external/selinux/libselinux/include \
     $(multirom_local_path)/lib
 
 LOCAL_SRC_FILES:= \
@@ -22,6 +23,7 @@ LOCAL_SRC_FILES:= \
     pong.c \
     rcadditions.c \
     rom_quirks.c \
+    rq_inject_file_contexts.c \
 
 # With these, GCC optimizes aggressively enough so full-screen alpha blending
 # is quick enough to be done in an animation
@@ -30,14 +32,20 @@ LOCAL_CFLAGS += -O3 -funsafe-math-optimizations
 #LOCAL_CFLAGS += -D_FORTIFY_SOURCE=2 -fstack-protector-all -O0 -g -fno-omit-frame-pointer -Wall
 
 LOCAL_MODULE:= multirom
-LOCAL_MODULE_TAGS := eng
+LOCAL_MODULE_TAGS := optional
 
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 LOCAL_MODULE_PATH := $(TARGET_ROOT_OUT)
 LOCAL_UNSTRIPPED_PATH := $(TARGET_ROOT_OUT_UNSTRIPPED)
 
-LOCAL_STATIC_LIBRARIES := libcutils libc libmultirom_static
+LOCAL_STATIC_LIBRARIES := libcutils libc libmultirom_static libselinux
 LOCAL_WHOLE_STATIC_LIBRARIES := libm libcutils libpng libz libft2_mrom_static
+
+ifeq ($(MR_FIRMWARE_DIR),)
+    LOCAL_CFLAGS += -DMR_FIRMWARE_DIR="/firmware"
+else
+    LOCAL_CFLAGS += -DMR_FIRMWARE_DIR="\"$(MR_FIRMWARE_DIR)\""
+endif
 
 # clone libbootimg to /system/extras/ from
 # https://github.com/Tasssadar/libbootimg.git

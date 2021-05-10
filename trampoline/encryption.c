@@ -32,41 +32,42 @@
 #include "../trampoline_encmnt/encmnt_defines.h"
 #include "../hooks.h"
 
+extern int e4crypt_install_keyring();
+
 static char encmnt_cmd_arg[64] = { 0 };
 static char *const encmnt_cmd[] = { "/mrom_enc/trampoline_encmnt", encmnt_cmd_arg, NULL };
 #ifdef MR_ENCRYPTION_FAKE_PROPERTIES
-static char *const encmnt_envp[] = { "LD_LIBRARY_PATH=/mrom_enc/", "LD_PRELOAD=/mrom_enc/libmultirom_fake_properties.so", NULL };
+static char *const encmnt_envp[] = { "LD_CONFIG_FILE='/mrom_enc/ld.config.txt'", "LD_LIBRARY_PATH=/mrom_enc/", "LD_PRELOAD=/mrom_enc/libmultirom_fake_properties.so /mrom_enc/libmultirom_fake_propertywait.so /mrom_enc/libmultirom_fake_logger.so", NULL };
 #else
-static char *const encmnt_envp[] = { "LD_LIBRARY_PATH=/mrom_enc/", NULL };
+static char *const encmnt_envp[] = { "LD_CONFIG_FILE='/mrom_enc/ld.config.txt'", "LD_LIBRARY_PATH=/mrom_enc/", NULL };
 #endif
 static int g_decrypted = 0;
 
-#ifdef __LP64__
-#define LINKER_PATH "/system/bin/linker64"
-#else
-#define LINKER_PATH "/system/bin/linker"
-#endif
-
-int encryption_before_mount(struct fstab *fstab)
+int encryption_before_mount(struct fstab *fstab, bool isFbe)
 {
     int exit_code = -1;
     char *output = NULL, *itr;
     int res = ENC_RES_ERR;
+    struct stat stat;
 
-    mkdir_recursive("/system/bin", 0755);
-    remove(LINKER_PATH);
-    symlink("/mrom_enc/linker", LINKER_PATH);
+#ifdef __LP64__
+    chmod("/mrom_enc/linker64", 0775);
+#else
     chmod("/mrom_enc/linker", 0775);
+#endif
     chmod("/mrom_enc/trampoline_encmnt", 0775);
     // some fonts not in ramdisk to save space, so use regular instead
     symlink("/mrom_enc/res/Roboto-Regular.ttf", "/mrom_enc/res/Roboto-Italic.ttf");
     symlink("/mrom_enc/res/Roboto-Regular.ttf", "/mrom_enc/res/Roboto-Medium.ttf");
 
-    if (access("/vendor", F_OK) >= 0) {
+    if (lstat("/vendor", &stat) == 0) {
         rename("/vendor", "/vendor_boot");
     }
     symlink("/mrom_enc/vendor", "/vendor");
 
+    if (access("/firmware", F_OK) >= 0) {
+        rename("/firmware", "/firmware_boot");
+    }
     mkdir("/firmware", 0775);
     struct fstab_part *fwpart = fstab_find_first_by_path(fstab, "/firmware");
     if(fwpart && (strcmp(fwpart->type, "emmc") != 0 || strcmp(fwpart->type, "vfat") != 0))
@@ -81,53 +82,71 @@ int encryption_before_mount(struct fstab *fstab)
 
     INFO("Running trampoline_encmnt\n");
 
-    strcpy(encmnt_cmd_arg, "decrypt");
+    if (isFbe) {
+        //rename("/realdata", "/data");
+        int err = mount("/realdata", "/data", NULL, MS_MOVE, NULL);
+        INFO("err %d %s\n", err, strerror(errno));
+        int ret = e4crypt_install_keyring();
+        strcpy(encmnt_cmd_arg, "decryptfbe");
+    } else {
+        strcpy(encmnt_cmd_arg, "decrypt");
+    }
     output = run_get_stdout_with_exit_with_env(encmnt_cmd, &exit_code, encmnt_envp);
-    if(exit_code != 0 || !output)
+    if(exit_code != 0 || (!isFbe && !output))
     {
         ERROR("Failed to run trampoline_encmnt, exit code %d: %s\n", exit_code, output);
         goto exit;
     }
 
-    itr = output + strlen(output) - 1;
-    while(itr >= output && isspace(*itr))
-        *itr-- = 0;
+    if (output != NULL) {
+        itr = output + strlen(output) - 1;
+        while(itr >= output && isspace(*itr))
+            *itr-- = 0;
 
-    if(strcmp(output, ENCMNT_BOOT_INTERNAL_OUTPUT) == 0)
-    {
-        INFO("trampoline_encmnt requested to boot internal ROM.\n");
-        res = ENC_RES_BOOT_INTERNAL;
-        goto exit;
+        if(strcmp(output, ENCMNT_BOOT_INTERNAL_OUTPUT) == 0)
+        {
+            INFO("trampoline_encmnt requested to boot internal ROM.\n");
+            res = ENC_RES_BOOT_INTERNAL;
+            goto exit;
+        }
+
+        if(strcmp(output, ENCMNT_BOOT_RECOVERY_OUTPUT) == 0)
+        {
+            INFO("trampoline_encmnt requested to boot recovery.\n");
+            res = ENC_RES_BOOT_RECOVERY;
+            goto exit;
+        }
     }
 
-    if(strcmp(output, ENCMNT_BOOT_RECOVERY_OUTPUT) == 0)
-    {
-        INFO("trampoline_encmnt requested to boot recovery.\n");
-        res = ENC_RES_BOOT_RECOVERY;
-        goto exit;
+    if (!isFbe) {
+
+        if(!strstartswith(output, "/dev"))
+        {
+            ERROR("Invalid trampoline_encmnt output: %s\n", output);
+            goto exit;
+        }
+
+        g_decrypted = 1;
+
+        struct fstab_part *datap = fstab_find_first_by_path(fstab, "/data");
+        if(!datap)
+        {
+            ERROR("Failed to find /data in fstab!\n");
+            goto exit;
+        }
+
+        INFO("Updating device %s to %s in fstab due to encryption.\n", datap->device, output);
+        fstab_update_device(fstab, datap->device, output);
     }
-
-    if(!strstartswith(output, "/dev"))
-    {
-        ERROR("Invalid trampoline_encmnt output: %s\n", output);
-        goto exit;
-    }
-
-    g_decrypted = 1;
-
-    struct fstab_part *datap = fstab_find_first_by_path(fstab, "/data");
-    if(!datap)
-    {
-        ERROR("Failed to find /data in fstab!\n");
-        goto exit;
-    }
-
-    INFO("Updating device %s to %s in fstab due to encryption.\n", datap->device, output);
-    fstab_update_device(fstab, datap->device, output);
 
     res = ENC_RES_OK;
 exit:
-    free(output);
+    if (isFbe) {
+        //rename("/data", "/realdata");
+        mount("/data", "/realdata", NULL, MS_MOVE, NULL);
+        mkdir("/data", 0755);
+    }
+    //free(output);
     return res;
 }
 
@@ -147,19 +166,16 @@ void encryption_destroy(void)
         g_decrypted = 0;
         free(output);
     }
-
-    // Make sure we're removing our symlink and not ROM's linker
-    if(lstat(LINKER_PATH, &info) >= 0 && S_ISLNK(info.st_mode))
-        remove(LINKER_PATH);
 }
 
 int encryption_cleanup(void)
 {
+    struct stat stat;
 #if MR_DEVICE_HOOKS >= 6
     tramp_hook_encryption_cleanup();
 #endif
-    remove("/vendor");
-    if (access("/vendor_boot", F_OK) >= 0) {
+    if (lstat("/vendor_boot", &stat) == 0) {
+        unlink("/vendor");
         rename("/vendor_boot", "/vendor");
     }
 
@@ -167,5 +183,8 @@ int encryption_cleanup(void)
         ERROR("encryption_cleanup: failed to unmount /firmware: %s\n", strerror(errno));
 
     rmdir("/firmware");
+    if (access("/firmware_boot", F_OK) >= 0) {
+        rename("/firmware_boot", "/firmware");
+    }
     return 0;
 }

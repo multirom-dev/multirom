@@ -34,6 +34,7 @@
 #include "lib/inject.h"
 #include "lib/log.h"
 #include "lib/util.h"
+#include "lib/mrom_data.h"
 
 #include "multirom.h"
 #include "version.h"
@@ -75,22 +76,22 @@ char *nokexec_find_boot_mmcblk_path(struct multirom_status *s)
         INFO(NO_KEXEC_LOG_TEXT ": found boot at '%s'\n", boot->device);
     else
     {
-        INFO(NO_KEXEC_LOG_TEXT ": not found in fstab, try looking at mrom.fstab...\n");
+        INFO(NO_KEXEC_LOG_TEXT ": not found in fstab, try looking at mrom_fstab...\n");
 
         struct fstab *mrom_fstab;
         char path_mrom_fstab[256];
 
-        sprintf(path_mrom_fstab, "%s/%s", mrom_dir(), "mrom.fstab");
+        sprintf(path_mrom_fstab, "%s/%s", mrom_dir(), "mrom_fsbat");
         mrom_fstab = fstab_load(path_mrom_fstab, 1);
         if (!mrom_fstab)
         {
-            ERROR(NO_KEXEC_LOG_TEXT ": couldn't load mrom.fstab '%s'\n", path_mrom_fstab);
+            ERROR(NO_KEXEC_LOG_TEXT ": couldn't load mrom_fstab '%s'\n", path_mrom_fstab);
             return NULL;
         }
 
         boot = fstab_find_first_by_path(mrom_fstab, "/boot");
         if (boot)
-            INFO(NO_KEXEC_LOG_TEXT ": found boot (using mrom.fstab) at '%s'\n", boot->device);
+            INFO(NO_KEXEC_LOG_TEXT ": found boot (using mrom_fstab) at '%s'\n", boot->device);
         else
             return NULL;
     }
@@ -184,6 +185,136 @@ int nokexec_set_secondary_flag(void)
     return res;
 }
 
+int nokexec_set_skip_mr_flag(void)
+{
+    // echo -ne "\x71" | dd of=/dev/nk bs=1 seek=63 count=1 conv=notrunc
+    int res = -1;
+    struct bootimg img;
+
+    // make note that the primary slot now contains a secondary boot.img
+    // by tagging the BOOT_NAME at the very end, even after a null terminated "tr_verNN" string
+    INFO(NO_KEXEC_LOG_TEXT ": Going to tag the bootimg in primary slot as skip_mr\n");
+
+    if (libbootimg_init_load(&img, nokexec_s.path_boot_mmcblk, LIBBOOTIMG_LOAD_ALL) < 0)
+    {
+        ERROR(NO_KEXEC_LOG_TEXT ": Could not open boot image (%s)!\n", nokexec_s.path_boot_mmcblk);
+        return -1;
+    }
+
+    // Update the boot.img
+    img.hdr.name[BOOT_NAME_SIZE-1] = 0x72;
+
+    INFO(NO_KEXEC_LOG_TEXT ": Writing boot.img updated with secondary flag set\n");
+    if (libbootimg_write_img(&img, nokexec_s.path_boot_mmcblk) < 0)
+    {
+        ERROR("Failed to libbootimg_write_img!\n");
+    }
+    else
+        res = 0;
+
+    libbootimg_destroy(&img);
+    return res;
+}
+
+int nokexec_unset_skip_mr_flag(void)
+{
+    // echo -ne "\x71" | dd of=/dev/nk bs=1 seek=63 count=1 conv=notrunc
+    int res = -1;
+    struct bootimg img;
+
+    // make note that the primary slot now contains a secondary boot.img
+    // by tagging the BOOT_NAME at the very end, even after a null terminated "tr_verNN" string
+    INFO(NO_KEXEC_LOG_TEXT ": Going to tag the bootimg in primary slot as skip_mr\n");
+
+    if (libbootimg_init_load(&img, "/dev/block/bootdevice/by-name/boot", LIBBOOTIMG_LOAD_ALL) < 0)
+    {
+        ERROR(NO_KEXEC_LOG_TEXT ": Could not open boot image (%s)!\n", nokexec_s.path_boot_mmcblk);
+        return -1;
+    }
+
+    // Update the boot.img
+    img.hdr.name[BOOT_NAME_SIZE-1] = 0x70;
+
+    INFO(NO_KEXEC_LOG_TEXT ": Writing boot.img updated with secondary flag set\n");
+    if (libbootimg_write_img(&img, "/dev/block/bootdevice/by-name/boot") < 0)
+    {
+        ERROR("Failed to libbootimg_write_img!\n");
+    }
+    else
+        res = 0;
+
+    libbootimg_destroy(&img);
+    return res;
+}
+
+int nokexec_set_oslevel(char *secondary_path)
+{
+    int res = -1;
+    struct bootimg primary_img, secondary_img;
+
+    INFO(NO_KEXEC_LOG_TEXT ": Going to check the bootimg in primary slot for slevel\n");
+
+    if (libbootimg_init_load(&primary_img, nokexec_s.path_boot_mmcblk, LIBBOOTIMG_LOAD_ALL) < 0)
+    {
+        ERROR(NO_KEXEC_LOG_TEXT ": Could not open boot image (%s)!\n", nokexec_s.path_boot_mmcblk);
+        return -1;
+    }
+
+    if (libbootimg_init_load(&secondary_img, secondary_path, LIBBOOTIMG_LOAD_ALL) < 0)
+    {
+        ERROR(NO_KEXEC_LOG_TEXT ": Could not open boot image (%s)!\n", nokexec_s.path_boot_mmcblk);
+        return -1;
+    }
+
+    char* primary_os_version = libbootimg_get_osversion(&primary_img.hdr, true);
+    char* primary_os_level = libbootimg_get_oslevel(&primary_img.hdr, true);
+
+    char* secondary_os_version = libbootimg_get_osversion(&secondary_img.hdr, true);
+    char* secondary_os_level = libbootimg_get_oslevel(&secondary_img.hdr, true);
+
+    if (strtol(primary_os_level, NULL, 10) > strtol(secondary_os_level, NULL, 10) || strtol(primary_os_version, NULL, 10) > strtol(secondary_os_version, NULL,  10)) {
+        secondary_img.hdr.oslevel = primary_img.hdr.oslevel;
+    }
+
+    INFO(NO_KEXEC_LOG_TEXT ": Writing boot.img updated with new security patch\n");
+    if (libbootimg_write_img(&secondary_img, secondary_path) < 0)
+    {
+        ERROR("Failed to libbootimg_write_img!\n");
+    }
+    else
+        res = 0;
+
+    libbootimg_destroy(&primary_img);
+    libbootimg_destroy(&secondary_img);
+    return res;
+}
+
+int nokexec_set_cmdline(char *secondary_path)
+{
+    int res = 0;
+    struct bootimg image;
+    char* custom_cmdline = "androidboot.selinux=permissive printk.devkmsg=on androidboot.android_dt_dir=/fakefsbat/";
+
+    INFO(NO_KEXEC_LOG_TEXT ": Going to check the bootimg in primary slot for slevel\n");
+
+    if (libbootimg_init_load(&image, secondary_path, LIBBOOTIMG_LOAD_ALL) < 0)
+    {
+        ERROR(NO_KEXEC_LOG_TEXT ": Could not open boot image (%s)!\n", nokexec_s.path_boot_mmcblk);
+        return -1;
+    }
+
+    char* cmdline = libbootimg_get_cmdline(&image.hdr);
+    char* newcmdline = NULL;
+    asprintf(&newcmdline, "%s %s", cmdline, custom_cmdline);
+
+    libbootimg_set_cmdline(&image.hdr, newcmdline);
+    free(newcmdline);
+
+    libbootimg_destroy(&image);
+    return res;
+}
+
+
 int nokexec_backup_primary(void)
 {
     int res;
@@ -196,11 +327,13 @@ int nokexec_backup_primary(void)
 int nokexec_flash_to_primary(const char * source)
 {
     int res = 0;
+    char* temp_boot = "/secondary_boot.img";
 
     // check trampoline no_kexec version and update if needed
+    copy_file(source, temp_boot);
     struct boot_img_hdr hdr;
 
-    if (libbootimg_load_header(&hdr, source) < 0)
+    if (libbootimg_load_header(&hdr, temp_boot) < 0)
     {
         ERROR(NO_KEXEC_LOG_TEXT ": Could not open boot image (%s)!\n", nokexec_s.path_boot_mmcblk);
         res = -1;
@@ -215,7 +348,7 @@ int nokexec_flash_to_primary(const char * source)
         {
             // Trampolines in ROM boot images may get out of sync, so we need to check it and
             // update if needed. I can't do that during ZIP installation because of USB drives.
-            if(inject_bootimg(source, 1) < 0)
+            if(inject_bootimg(temp_boot, 1) < 0)
             {
                 ERROR(NO_KEXEC_LOG_TEXT ": Failed to inject bootimg!\n");
                 res = -1;
@@ -226,7 +359,7 @@ int nokexec_flash_to_primary(const char * source)
     }
 
     if (res == 0)
-        INFO(NO_KEXEC_LOG_TEXT ": flashing '%s' to boot partition; res=%d\n", source, res = copy_file(source, nokexec_s.path_boot_mmcblk));
+        INFO(NO_KEXEC_LOG_TEXT ": flashing '%s' to boot partition; res=%d\n", temp_boot, res = copy_file(temp_boot, nokexec_s.path_boot_mmcblk));
 
     return res;
 }
@@ -244,6 +377,26 @@ int nokexec_is_secondary_in_primary(const char *path_boot_mmcblk)
     else
     {
         if (hdr.name[BOOT_NAME_SIZE-1] == 0x71)
+            res = 1;
+    }
+    INFO(NO_KEXEC_LOG_TEXT ": Checking the primary slot bootimg for the secondary tag; res=%d\n", res);
+
+    return res;
+}
+
+int nokexec_is_skip_mr_flag(const char *path_boot_mmcblk)
+{
+    int res = 0;
+    struct boot_img_hdr hdr;
+
+    if (libbootimg_load_header(&hdr, path_boot_mmcblk) < 0)
+    {
+        ERROR(NO_KEXEC_LOG_TEXT ": Could not open boot image (%s)!\n", path_boot_mmcblk);
+        res = -1;
+    }
+    else
+    {
+        if (hdr.name[BOOT_NAME_SIZE-1] == 0x72)
             res = 1;
     }
     INFO(NO_KEXEC_LOG_TEXT ": Checking the primary slot bootimg for the secondary tag; res=%d\n", res);
@@ -306,6 +459,40 @@ int nokexec_is_second_boot(void)
     return is_second_boot;
 }
 
+int nokexec_is_skip_mr(void)
+{
+    static int is_second_boot = -1;
+    if(is_second_boot != -1) {
+        INFO(NO_KEXEC_LOG_TEXT ": returning cached info is_second_boot=%d\n", is_second_boot);
+        return is_second_boot;
+    }
+
+    int res;
+    INFO(NO_KEXEC_LOG_TEXT ": Checking primary slot...\n");
+    char * path_boot_mmcblk = nokexec_find_boot_mmcblk_path(NULL);
+    if (!path_boot_mmcblk)
+        return -1;
+
+    res = nokexec_is_skip_mr_flag(path_boot_mmcblk);
+    free(path_boot_mmcblk);
+
+    if (res < 0)
+        return -1;
+    else if (res == 1)
+    {
+        // it's a secondary boot.img so set second_boot=1
+        INFO(NO_KEXEC_LOG_TEXT ":    secondary bootimg, so second_boot=1\n");
+        is_second_boot = 1;
+    }
+    else
+    {
+        INFO(NO_KEXEC_LOG_TEXT ":    primary bootimg, so second_boot=0\n");
+        is_second_boot = 0;
+    }
+
+    return is_second_boot;
+}
+
 
 int nokexec_flash_secondary_bootimg(struct multirom_rom *secondary_rom)
 {
@@ -320,11 +507,38 @@ int nokexec_flash_secondary_bootimg(struct multirom_rom *secondary_rom)
     // now flash the secondary boot.img to primary slot
     char path_bootimg[256];
     sprintf(path_bootimg, "%s/%s", secondary_rom->base_path, "boot.img");
+
+    if (nokexec_set_oslevel(path_bootimg))
+        return -3;
+
+    if (nokexec_set_cmdline(path_bootimg))
+        return -3;
+
     if (nokexec_flash_to_primary(path_bootimg))
         return -3;
 
     // make note that the primary slot now contains a secondary boot.img
     if (nokexec_set_secondary_flag())
+        return -4;
+
+    return 0;
+}
+
+int nokexec_flash_skip_mr_bootimg(struct multirom_rom *secondary_rom)
+{
+    // make sure all the paths are set up, otherwise abort
+    if (!nokexec_s.path_boot_mmcblk || !nokexec_s.path_primary_bootimg)
+        return -1;
+
+    // now flash the secondary boot.img to primary slot
+    char path_bootimg[256];
+    sprintf(path_bootimg, "%s/%s", secondary_rom->base_path, "boot.img");
+
+    if (nokexec_flash_to_primary(path_bootimg))
+        return -3;
+
+    // make note that the primary slot now contains a secondary boot.img
+    if (nokexec_set_skip_mr_flag())
         return -4;
 
     return 0;

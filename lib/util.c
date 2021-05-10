@@ -26,10 +26,12 @@
 #include <fcntl.h>
 #include <cutils/android_reboot.h>
 #include <unistd.h>
+#include <pwd.h>
 
 #ifdef HAVE_SELINUX
 #include <selinux/label.h>
 #endif
+#include <selinux/selinux.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -37,6 +39,9 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <sys/mount.h>
+#include <sys/sysmacros.h>
+#include <sys/syscall.h>
+#include <sys/reboot.h>
 #include <linux/loop.h>
 
 #include <private/android_filesystem_config.h>
@@ -67,6 +72,7 @@ time_t gettime(void)
  * android_name_to_id - returns the integer uid/gid associated with the given
  * name, or -1U on error.
  */
+#if 0
 static unsigned int android_name_to_id(const char *name)
 {
     struct android_id_info const *info = android_ids;
@@ -79,6 +85,7 @@ static unsigned int android_name_to_id(const char *name)
 
     return -1U;
 }
+#endif
 
 /*
  * decode_uid - decodes and returns the given string, which can be either the
@@ -88,16 +95,27 @@ static unsigned int android_name_to_id(const char *name)
 unsigned int decode_uid(const char *s)
 {
     unsigned int v;
+    uid_t uid;
+    struct passwd *pwd = NULL;
 
-    if (!s || *s == '\0')
+    if (!s || *s == '\0') {
         return -1U;
-    if (isalpha(s[0]))
-        return android_name_to_id(s);
+    }
+    if (isalpha(s[0])) {
+
+        pwd = getpwnam(s);
+        if (!pwd) {
+            return -errno;
+        }
+        uid_t uid = pwd->pw_uid;
+        return uid;
+    }
 
     errno = 0;
     v = (unsigned int) strtoul(s, 0, 0);
-    if (errno)
+    if (errno) {
         return -1U;
+    }
     return v;
 }
 
@@ -143,6 +161,7 @@ int mkdir_recursive_with_perms(const char *pathname, mode_t mode, const char *ow
 int mkdir_with_perms(const char *path, mode_t mode, const char *owner, const char *group)
 {
     int ret;
+    struct passwd *pwd = NULL;
 
     ret = mkdir(path, mode);
     /* chmod in case the directory already exists */
@@ -155,15 +174,52 @@ int mkdir_with_perms(const char *path, mode_t mode, const char *owner, const cha
 
     if(owner)
     {
-        uid_t uid = decode_uid(owner);
-        gid_t gid = -1;
+        pwd = getpwnam(owner);
 
-        if(group)
-            gid = decode_uid(group);
-
-        if(chown(path, uid, gid) < 0)
+        if (!pwd) {
             return -errno;
+        }
+
+        uid_t uid = pwd->pw_uid;
+        gid_t gid = pwd->pw_gid;
+
+        if(chown(path, uid, gid) < 0) {
+            return -errno;
+        }
     }
+    return 0;
+}
+
+int mkdir_with_perms_context(const char *path, mode_t mode, const char *owner, const char *group, char* context)
+{
+    int ret;
+    struct passwd *pwd = NULL;
+
+    ret = mkdir(path, mode);
+    /* chmod in case the directory already exists */
+    if (ret == -1 && errno == EEXIST) {
+        ret = chmod(path, mode);
+    }
+    if (ret == -1) {
+        return -errno;
+    }
+
+    if(owner)
+    {
+        pwd = getpwnam(owner);
+
+        if (!pwd) {
+            return -errno;
+        }
+
+        uid_t uid = pwd->pw_uid;
+        gid_t gid = pwd->pw_gid;
+
+        if(chown(path, uid, gid) < 0) {
+            return -errno;
+        }
+    }
+    setfilecon(path, context);
     return 0;
 }
 
@@ -272,6 +328,136 @@ int copy_file(const char *from, const char *to)
     return 0;
 }
 
+int copy_file_with_context(const char *from, const char *to, char* context)
+{
+    FILE *in = fopen(from, "re");
+    if(!in)
+        return -1;
+
+    FILE *out = fopen(to, "we");
+    if(!out)
+    {
+        fclose(in);
+        return -1;
+    }
+
+    fseek(in, 0, SEEK_END);
+    int size = ftell(in);
+    rewind(in);
+
+    char *buff = malloc(size);
+    fread(buff, 1, size, in);
+    fwrite(buff, 1, size, out);
+
+    if(setfilecon(to, context)) {
+        ERROR("couldnt set %s context to %s because %s", to, context, strerror(errno));
+    }
+
+    fclose(in);
+    fclose(out);
+    free(buff);
+    return 0;
+}
+
+int getattr(const char *path, struct file_attr *a) {
+	if (lstat(path, &a->st) == -1)
+		return -1;
+	char con[256];
+	if (getfilecon(path, &con) == -1)
+		return -1;
+	strcpy(a->con, con);
+	//freecon(con);
+	return 0;
+}
+
+int setattr(const char *path, struct file_attr *a) {
+	if (chmod(path, a->st.st_mode & 0777) < 0)
+		return -1;
+	if (chown(path, a->st.st_uid, a->st.st_gid) < 0)
+		return -1;
+	if (a->con[0] && setfilecon(path, a->con) < 0)
+		return -1;
+	return 0;
+}
+
+bool is_in_list(char** stack, char* needle) {
+    int i = 0;
+    while (stack[i] != NULL) {
+        if (!strcmp(stack[i], needle)) {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+void clone_dir(DIR* d, char* dirpath, char* target, bool preserve_context, char** exclude_dir) {
+
+    char in[256];
+    char out[256];
+    memset(in, 0, 256);
+    memset(out, 0, 256);
+    struct dirent *dp = NULL;
+    char *fstab_name = NULL;
+    DIR* dir = NULL;
+    if (access(target, F_OK)) {
+        mkdir_with_perms(target, 0755, NULL, NULL);
+    }
+    ERROR("copying dir %s to %s\n", dirpath, target);
+    while((dp = readdir(d)))
+    {
+        if((dp->d_name[0] == '.' && strlen(dp->d_name) == 1) || (dp->d_name[0] == '.' && dp->d_name[1] == '.') || (exclude_dir && exclude_dir[0] && is_in_list(exclude_dir, dp->d_name)))
+            continue;
+
+        sprintf(in, "%s/%s", dirpath, dp->d_name);
+        if (!strcmp(dp->d_name, "init")) {
+            sprintf(out, "%s/%s", target, "main_init");
+        } else {
+            sprintf(out, "%s/%s", target, dp->d_name);
+        }
+
+        struct file_attr a;
+        getattr(in, &a);
+
+        if (dp->d_type == DT_DIR) {
+            dir = opendir(in);
+            if (preserve_context) {
+                char* context = calloc(1, 50);
+                getfilecon(in, &context);
+                mkdir_with_perms_context(out, 0755, NULL, NULL, context);
+            } else {
+                mkdir_with_perms(out, 0755, NULL, NULL);
+            }
+            setattr(out, &a);
+            copy_dir_contents(dir, in, out, exclude_dir);
+            continue;
+        } else if (dp->d_type == DT_LNK) {
+            ERROR("copying link %s to %s\n", in, out);
+            char target[256];
+            readlink(in, target, sizeof(target));
+            symlink(target, out);
+            setattr(out, &a);
+        } else if (dp->d_type == DT_REG) {
+            ERROR("copying file %s to %s\n", in, out);
+            if (preserve_context) {
+                char* context = calloc(1, 50);
+                getfilecon(in, &context);
+                copy_file_with_context(in, out, context);
+            } else {
+                copy_file(in, out);
+            }
+            setattr(out, &a);
+        }
+
+    }
+    closedir(d);
+}
+
+
+void copy_dir_contents(DIR* d, char* dirpath, char* target, char** exclude_dir) {
+    clone_dir(d, dirpath, target, false, exclude_dir);
+}
+
 int write_file(const char *path, const char *value)
 {
     int fd, ret, len;
@@ -292,6 +478,7 @@ int write_file(const char *path, const char *value)
 
     close(fd);
     if (ret < 0) {
+        ERROR("Failed to open file %s (%d: %s)\n", path, errno, strerror(errno));
         return -errno;
     } else {
         return 0;
@@ -376,6 +563,25 @@ int run_cmd_with_env(char **cmd, char *const *envp)
 }
 
 
+char* read_file(char* file) {
+    char* buf = calloc(1, 256000);
+    int nread = 0;
+    int offset = 0;
+    char buff[256];
+    FILE* fp = fopen(file, "r");
+    if (fp) {
+        while ((nread = fread(buff, 1, 256, fp)) > 0) {
+            INFO("buf %s\n", buff);
+            memcpy(buf + offset, buff, nread);
+            offset += nread;
+        }
+        fclose(fp);
+    } else {
+        ERROR("cannot open %s %s\n", file, strerror(errno));
+    }
+    return buf;
+}
+
 char *run_get_stdout(char **cmd)
 {
     int exit_code;
@@ -433,6 +639,11 @@ char *run_get_stdout_with_exit_with_env(char **cmd, int *exit_code, char *const 
         close(fd[0]);
 
         waitpid(pid, exit_code, 0);
+
+        if (WIFEXITED(*exit_code)) {
+            INFO("exit code %d", WEXITSTATUS(*exit_code));
+        }
+
 
         if(written == 0)
         {
@@ -697,7 +908,7 @@ int create_loop_device(const char *dev_path, const char *img_path, int loop_num,
         return -1;
     }
 
-    INFO("create_loop_device: loop_num = %d", loop_num);
+    INFO("create_loop_device: loop_num = %d\n", loop_num);
 
     if(mknod(dev_path, S_IFBLK | loop_chmod, makedev(7, loop_num)) < 0)
     {
@@ -761,7 +972,7 @@ int mount_image(const char *src, const char *dst, const char *fs, int flags, con
 
     if(loop_num == MAX_LOOP_NUM)
     {
-        ERROR("mount_image: failed to find suitable loop device number!");
+        ERROR("mount_image: failed to find suitable loop device number!\n");
         return -1;
     }
 
@@ -776,6 +987,79 @@ int mount_image(const char *src, const char *dst, const char *fs, int flags, con
     return res;
 }
 
+#define MULTIROM_LOOP_NUM_START   231
+#define MULTIROM_DEV_PATH "/multirom/dev"
+int multirom_mount_image(const char *src, const char *dst, const char *fs, int flags, const void *data)
+{
+    static int next_loop_num = MULTIROM_LOOP_NUM_START;
+    char path[64];
+    int device_fd;
+    int loop_num = -1;
+    int res = 0;
+    struct stat info;
+    struct loop_info64 lo_info;
+
+    /*for(loop_num = next_loop_num; loop_num < MAX_LOOP_NUM; ++loop_num)
+    {
+        sprintf(path, "/dev/block/loop%d", loop_num);
+        if(stat(path, &info) < 0)
+        {
+            if(errno == ENOENT)
+                break;
+        }
+        else if(S_ISBLK(info.st_mode) && (device_fd = open(path, O_RDWR | O_CLOEXEC)) >= 0)
+        {
+            int ioctl_res = ioctl(device_fd, LOOP_GET_STATUS64, &lo_info);
+            close(device_fd);
+
+            if (ioctl_res < 0 && errno == ENXIO)
+                break;
+        }
+    }
+
+    if(loop_num == MAX_LOOP_NUM)
+    {
+        ERROR("mount_image: failed to find suitable loop device number!\n");
+        return -1;
+    }*/
+
+    // now change to /multirom/dev/<partition name>
+    mkdir_recursive_with_perms(MULTIROM_DEV_PATH, 0777, NULL, NULL);
+    sprintf(path, MULTIROM_DEV_PATH "/%s", dst);
+
+create_loop:
+    if(create_loop_device(path, src, loop_num, 0777) < 0) {
+        res = -1;
+    } else {
+        res = 0;
+    }
+
+
+    if (res != -1) {
+        if(mount(path, dst, fs, flags, data) < 0) {
+            ERROR("Failed to mount loop (%d: %s)\n", errno, strerror(errno));
+            res = -1;
+        } else {
+            res = 0;
+        }
+    }
+
+    INFO("multirom create loop device %d\n", loop_num);
+    //multirom_kmsg_logging(BACKUP_LATE_KLOG);
+    if(res && loop_num < MAX_LOOP_NUM) {
+        if (loop_num == -1)
+            loop_num = 0;
+        else
+            loop_num = loop_num + 1;
+        sprintf(path, "/dev/block/loop%d", loop_num);
+        goto create_loop;
+    }
+
+    sync();
+
+    return res;
+}
+
 void do_reboot(int type)
 {
     sync();
@@ -785,16 +1069,22 @@ void do_reboot(int type)
     {
         default:
         case REBOOT_SYSTEM:
-            android_reboot(ANDROID_RB_RESTART, 0, 0);
+            //android_reboot(ANDROID_RB_RESTART, 0, 0);
+            syscall(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                    LINUX_REBOOT_CMD_RESTART2, "");
             break;
         case REBOOT_RECOVERY:
-            android_reboot(ANDROID_RB_RESTART2, 0, "recovery");
+            //android_reboot(ANDROID_RB_RESTART2, 0, "recovery");
+            syscall(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                    LINUX_REBOOT_CMD_RESTART2, "recovery");
             break;
         case REBOOT_BOOTLOADER:
-            android_reboot(ANDROID_RB_RESTART2, 0, "bootloader");
+            //android_reboot(ANDROID_RB_RESTART2, 0, "bootloader");
+            syscall(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                    LINUX_REBOOT_CMD_RESTART2, "bootloader");
             break;
         case REBOOT_SHUTDOWN:
-            android_reboot(ANDROID_RB_POWEROFF, 0, 0);
+            reboot(RB_POWER_OFF);
             break;
     }
 

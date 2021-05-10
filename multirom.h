@@ -28,24 +28,28 @@
 
 enum
 {
-    ROM_DEFAULT           = 0,
+    ROM_DEFAULT                  = 0,
 
-    ROM_ANDROID_INTERNAL  = 1,
-    ROM_ANDROID_USB_IMG   = 2,
-    ROM_ANDROID_USB_DIR   = 3,
+    ROM_ANDROID_INTERNAL         = 1,
+    ROM_ANDROID_USB_IMG          = 2,
+    ROM_ANDROID_USB_DIR          = 3,
+    ROM_ANDROID_INTERNAL_HYBRID  = 4,
+    ROM_ANDROID_USB_HYBRID       = 5,
 
-    ROM_LINUX_INTERNAL    = 4,
-    ROM_LINUX_USB         = 5,
+    ROM_LINUX_INTERNAL           = 6,
+    ROM_LINUX_USB                = 7,
 
-    ROM_UNSUPPORTED_INT   = 6,
-    ROM_UNSUPPORTED_USB   = 7,
-    ROM_UNKNOWN           = 8
+    ROM_UNSUPPORTED_INT          = 8,
+    ROM_UNSUPPORTED_USB          = 9,
+
+    ROM_UNKNOWN                  = 10
 };
 
 #define M(x) (1 << x)
-#define MASK_INTERNAL (M(ROM_DEFAULT) | M(ROM_ANDROID_INTERNAL) | M(ROM_UNSUPPORTED_INT) | M(ROM_LINUX_INTERNAL))
-#define MASK_USB_ROMS (M(ROM_ANDROID_USB_IMG) | M(ROM_ANDROID_USB_DIR) | M(ROM_UNSUPPORTED_USB) | M(ROM_LINUX_USB))
-#define MASK_ANDROID (M(ROM_ANDROID_USB_DIR) | M(ROM_ANDROID_USB_IMG) | M(ROM_ANDROID_INTERNAL))
+#define MASK_INTERNAL (M(ROM_DEFAULT) | M(ROM_ANDROID_INTERNAL) | M(ROM_ANDROID_INTERNAL_HYBRID) | M(ROM_UNSUPPORTED_INT) | M(ROM_LINUX_INTERNAL))
+#define MASK_USB_ROMS (M(ROM_ANDROID_USB_IMG) | M(ROM_ANDROID_USB_DIR) | M(ROM_ANDROID_USB_HYBRID) | M(ROM_UNSUPPORTED_USB) | M(ROM_LINUX_USB))
+#define MASK_ANDROID (M(ROM_ANDROID_USB_DIR) | M(ROM_ANDROID_USB_HYBRID) | M(ROM_ANDROID_USB_IMG) | M(ROM_ANDROID_INTERNAL) | M(ROM_ANDROID_INTERNAL_HYBRID))
+#define MASK_HYBRID (M(ROM_ANDROID_INTERNAL_HYBRID) | M(ROM_ANDROID_USB_HYBRID))
 #define MASK_UNSUPPORTED (M(ROM_UNSUPPORTED_USB) | M(ROM_UNSUPPORTED_INT))
 #define MASK_LINUX (M(ROM_LINUX_INTERNAL) | M(ROM_LINUX_USB))
 #define MASK_KEXEC (MASK_LINUX)
@@ -110,8 +114,13 @@ struct multirom_status
     int enable_kmsg_logging;
     int hide_internal;
     char *int_display_name;
+    char os_version[20];
+    char os_level[20];
+    char os_version_raw[20];
+    char os_level_raw[20];
     int rotation;
     int force_generic_fb;
+    int use_primary_kernel;
     float anim_duration_coef;
     struct multirom_rom *auto_boot_rom;
     struct multirom_rom *current_rom;
@@ -122,7 +131,7 @@ struct multirom_status
     struct rcadditions rc;
 };
 
-int multirom(const char *rom_to_boot);
+int multirom(const char *rom_to_boot, int always_reboot);
 int multirom_find_base_dir(void);
 void multirom_emergency_reboot(void);
 int multirom_default_status(struct multirom_status *s);
@@ -136,13 +145,13 @@ void multirom_import_internal(void);
 void multirom_dump_status(struct multirom_status *s);
 int multirom_save_status(struct multirom_status *s);
 void multirom_fixup_rom_name(struct multirom_rom *rom, char *name, const char *def);
-int multirom_prepare_for_boot(struct multirom_status *s, struct multirom_rom *to_boot);
+int multirom_prepare_for_boot(struct multirom_status *s, struct multirom_rom *to_boot, int always_reboot);
 void multirom_free_status(struct multirom_status *s);
 void multirom_free_rom(void *rom);
 int multirom_init_fb(int rotation);
 int multirom_prep_android_mounts(struct multirom_status *s, struct multirom_rom *rom);
 int multirom_create_media_link(struct multirom_status *s);
-int multirom_process_android_fstab(char *fstab_name, int has_fw, struct fstab_part **fw_part);
+int multirom_process_android_fstab(char *fstab_name, int has_fw, struct fstab_part **fw_part, int treble_fstab);
 int multirom_get_api_level(const char *path);
 int multirom_get_rom_type(struct multirom_rom *rom);
 int multirom_get_trampoline_ver(void);

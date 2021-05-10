@@ -65,8 +65,8 @@ if [ -L /tmp/boot/sbin/watchdogd ] ; then
     ln -sf ../init /tmp/boot/sbin/watchdogd
 fi
 
-if [ -e /tmp/boot/mrom.fstab ] ; then
-    rm /tmp/boot/mrom.fstab
+if [ -e /tmp/boot/mrom_fsbat ] ; then
+    rm /tmp/boot/mrom_fsbat
 fi
 
 # Remove encryption files

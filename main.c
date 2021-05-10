@@ -51,6 +51,7 @@ int main(int argc, const char *argv[])
 {
     int i;
     const char *rom_to_boot = NULL;
+    int always_reboot = 0;
 
     for(i = 1; i < argc; ++i)
     {
@@ -105,11 +106,12 @@ int main(int argc, const char *argv[])
         {
             rom_to_boot = argv[i] + sizeof("--boot-rom");
         }
+        else if (!strcmp(argv[i], "alwaysreboot")) {
+            always_reboot = 1;
+        }
     }
 
     srand(time(0));
-    klog_init();
-
     // output all messages to dmesg,
     // but it is possible to filter out INFO messages
     klog_set_level(6);
@@ -124,7 +126,7 @@ int main(int argc, const char *argv[])
     if(rom_to_boot)
         mount(NULL, "/", NULL, MS_REMOUNT, NULL);
 
-    int exit = multirom(rom_to_boot);
+    int exit = multirom(rom_to_boot, always_reboot);
 
     if(rom_to_boot)
         mount(NULL, "/", NULL, MS_RDONLY | MS_REMOUNT, NULL);

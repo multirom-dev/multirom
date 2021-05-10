@@ -82,5 +82,8 @@ int nokexec_restore_primary_and_cleanup(void);
 int nokexec_flash_secondary_bootimg(struct multirom_rom *secondary_rom);
 
 int nokexec_is_second_boot(void);
+int nokexec_is_skip_mr(void);
+int nokexec_set_skip_mr_flag(void);
+int nokexec_unset_skip_mr_flag(void);
 
 #endif

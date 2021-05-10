@@ -15,9 +15,14 @@
  * along with MultiROM.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef PW_UI_H
-#define PW_UI_H
+#ifndef _RQ_INJECT_FILE_CONTEXTS_H
+#define _RQ_INJECT_FILE_CONTEXTS_H
 
-int pw_ui_run(int pwtype, bool isFbe);
+/*
+ * Main inject_file_contexts() function will determine
+ * if the file is a compiled binary format or text format
+ * and act accordingly.
+ */
+int inject_file_contexts(const char *path);
 
-#endif
+#endif //_RQ_INJECT_FILE_CONTEXTS_H

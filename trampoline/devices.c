@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/sysmacros.h>
 
 #include <fcntl.h>
 #include <dirent.h>
@@ -66,6 +67,9 @@
 
 static const char *firmware_dirs[] = { "/etc/firmware",
                                        "/vendor/firmware",
+#ifdef MR_EXTRA_FIRMWARE_DIR
+                                       MR_EXTRA_FIRMWARE_DIR,
+#endif
                                        "/firmware/image" };
 
 #ifdef HAVE_SELINUX
@@ -798,6 +802,9 @@ static void handle_generic_device_event(struct uevent *uevent)
          }
      } else if (!strncmp(uevent->subsystem, "graphics", 8)) {
          base = "/dev/graphics/";
+         make_dir(base, 0755);
+     } else if (!strncmp(uevent->subsystem, "drm", 3)) {
+         base = "/dev/dri/";
          make_dir(base, 0755);
      } else if (!strncmp(uevent->subsystem, "oncrpc", 6)) {
          base = "/dev/oncrpc/";

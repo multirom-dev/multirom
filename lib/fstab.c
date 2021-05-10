@@ -338,8 +338,8 @@ struct fstab *fstab_auto_load(void)
     char path[64];
     path[0] = 0;
 
-    if(access("/mrom.fstab", F_OK) >= 0)
-        strcpy(path, "/mrom.fstab");
+    if(access("/mrom_fsbat", F_OK) >= 0)
+        strcpy(path, "/mrom_fsbat");
     else
     {
         DIR *d = opendir("/");

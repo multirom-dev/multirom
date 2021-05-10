@@ -23,6 +23,7 @@
 
 #include "pw_ui.h"
 #include "encmnt_defines.h"
+extern "C" {
 #include "../lib/framebuffer.h"
 #include "../lib/colors.h"
 #include "../lib/log.h"
@@ -34,8 +35,10 @@
 #include "../lib/workers.h"
 #include "../lib/containers.h"
 #include "../rom_quirks.h"
+}
 
 #include "crypto/lollipop/cryptfs.h"
+#include "crypto/ext4crypt/Decrypt.h"
 
 #define HEADER_HEIGHT (110*DPI_MUL)
 #define PWUI_DOT_R (15*DPI_MUL)
@@ -51,6 +54,7 @@ struct pwui_type_pass_data {
     char *pass_buf;
     char *pass_buf_stars;
     size_t pass_buf_cap;
+    bool isFbe;
 };
 
 struct pwui_type_pattern_data {
@@ -61,6 +65,7 @@ struct pwui_type_pattern_data {
     int connected_dots[PWUI_DOTS_CNT];
     size_t connected_dots_len;
     int touch_id;
+    bool isFbe;
 };
 
 static pthread_mutex_t exit_code_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -78,7 +83,7 @@ static void boot_internal_clicked(UNUSED void *data)
 
     // We need to run quirks for primary ROM to prevent
     // restorecon breaking everything
-    rom_quirks_on_initrd_finalized();
+    //rom_quirks_on_initrd_finalized();
 
     pthread_mutex_lock(&exit_code_mutex);
     exit_code = ENCMNT_UIRES_BOOT_INTERNAL;
@@ -105,20 +110,20 @@ static void boot_reboot_to_recovery(UNUSED void *data)
 
 static void fade_rect_alpha_step(void *data, float interpolated)
 {
-    fb_rect *r = data;
+    fb_rect *r = (fb_rect*)data;
     r->color = (((int)(0xFF*interpolated)) << 24);
     fb_request_draw();
 }
 
 static void reveal_rect_alpha_step(void *data, float interpolated)
 {
-    fb_rect *r = data;
+    fb_rect *r = (fb_rect*)data;
     interpolated = 1.f - interpolated;
     r->color = (r->color & ~(0xFF << 24)) | (((int)(0xFF*interpolated)) << 24);
     fb_request_draw();
 }
 
-static int try_password(const char *pass)
+static int try_password(char *pass, bool isFbe)
 {
     fb_text_set_content(invalid_pass_text, "");
 
@@ -127,7 +132,12 @@ static int try_password(const char *pass)
     ncard_set_text(b, "Verifying password...");
     ncard_show(b, 1);
 
-    if(cryptfs_check_passwd(pass) != 0)
+    if (isFbe && Decrypt_User(0, pass) == false) {
+        ncard_hide();
+        fb_text_set_content(invalid_pass_text, "Invalid password!");
+        center_text(invalid_pass_text, 0, -1, fb_width, -1);
+        return -1;
+    } else if(!isFbe && cryptfs_check_passwd(pass) != 0)
     {
         ncard_hide();
         fb_text_set_content(invalid_pass_text, "Invalid password!");
@@ -154,7 +164,7 @@ static int try_password(const char *pass)
 
 static void type_pass_key_pressed(void *data, uint8_t code)
 {
-    struct pwui_type_pass_data *d = data;
+    struct pwui_type_pass_data *d = (pwui_type_pass_data*)data;
 
     if(code < 128)
     {
@@ -162,8 +172,8 @@ static void type_pass_key_pressed(void *data, uint8_t code)
         while(d->pass_buf_cap < pass_len + 2)
         {
             d->pass_buf_cap *= 2;
-            d->pass_buf = realloc(d->pass_buf, d->pass_buf_cap);
-            d->pass_buf_stars = realloc(d->pass_buf_stars, d->pass_buf_cap);
+            d->pass_buf = (char*)realloc(d->pass_buf, d->pass_buf_cap);
+            d->pass_buf_stars = (char*)realloc(d->pass_buf_stars, d->pass_buf_cap);
         }
 
         if(pass_len > 0)
@@ -204,31 +214,32 @@ static void type_pass_key_pressed(void *data, uint8_t code)
             fb_request_draw();
             break;
         case OSK_ENTER:
-            try_password(d->pass_buf);
+            try_password(d->pass_buf, d->isFbe);
             break;
     }
 }
 
-static void type_pass_init(int pwtype)
+static void type_pass_init(int pwtype, bool isFbe)
 {
-    struct pwui_type_pass_data *d = mzalloc(sizeof(struct pwui_type_pass_data));
+    struct pwui_type_pass_data *d = (pwui_type_pass_data*)mzalloc(sizeof(struct pwui_type_pass_data));
     d->keyboard = keyboard_create(pwtype == CRYPT_TYPE_PIN ? KEYBOARD_PIN : KEYBOARD_NORMAL,
             0, fb_height*0.65, fb_width, fb_height*0.35);
+    d->isFbe = isFbe;
     keyboard_set_callback(d->keyboard, type_pass_key_pressed, d);
 
     d->passwd_text = fb_add_text(0, 0, C_TEXT, SIZE_BIG, "");
     center_text(d->passwd_text, 0, 0, fb_width, fb_height);
 
     d->pass_buf_cap = 12;
-    d->pass_buf = mzalloc(d->pass_buf_cap);
-    d->pass_buf_stars = mzalloc(d->pass_buf_cap);
+    d->pass_buf = (char*)mzalloc(d->pass_buf_cap);
+    d->pass_buf_stars = (char*)mzalloc(d->pass_buf_cap);
 
     pwui_type_data = d;
 }
 
 static void type_pass_destroy(void)
 {
-    struct pwui_type_pass_data *d = pwui_type_data;
+    struct pwui_type_pass_data *d = (pwui_type_pass_data*)pwui_type_data;
 
     keyboard_destroy(d->keyboard);
     free(d->pass_buf);
@@ -276,7 +287,7 @@ static inline void type_pattern_connect_dot(struct pwui_type_pattern_data *d,  i
 
 static int type_pattern_touch_handler(touch_event *ev, void *data)
 {
-    struct pwui_type_pattern_data *d = data;
+    struct pwui_type_pattern_data *d = (pwui_type_pattern_data*)data;
 
     if(d->touch_id == -1 && (ev->changed & TCHNG_ADDED) && !ev->consumed)
     {
@@ -343,16 +354,16 @@ static int type_pattern_touch_handler(touch_event *ev, void *data)
         d->cur_line = NULL;
         fb_request_draw();
 
-        char *passwd = malloc(d->connected_dots_len+1);
+        char *passwd = (char*)malloc(d->connected_dots_len+1);
         size_t i;
         for(i = 0; i < d->connected_dots_len; ++i)
             passwd[i] = '1' + d->connected_dots[i];
         passwd[i] = 0;
 
-        if(try_password(passwd) < 0)
+        if(try_password(passwd, d->isFbe) < 0)
         {
-            list_clear(&d->active_dots, fb_remove_item);
-            list_clear(&d->complete_lines, fb_remove_item);
+            list_clear(&d->active_dots, (callback)fb_remove_item);
+            list_clear(&d->complete_lines, (callback)fb_remove_item);
             fb_request_draw();
         }
 
@@ -362,9 +373,9 @@ static int type_pattern_touch_handler(touch_event *ev, void *data)
     return 0;
 }
 
-static void type_pattern_init(void)
+static void type_pattern_init(bool isFbe)
 {
-    struct pwui_type_pattern_data *d = mzalloc(sizeof(struct pwui_type_pattern_data));
+    struct pwui_type_pattern_data *d = (pwui_type_pattern_data*)mzalloc(sizeof(struct pwui_type_pattern_data));
     int cx, cy;
 
     const int start_x = fb_width*0.2;
@@ -386,6 +397,7 @@ static void type_pattern_init(void)
     }
 
     d->touch_id = -1;
+    d->isFbe = isFbe;
     add_touch_handler(type_pattern_touch_handler, d);
 
     pwui_type_data = d;
@@ -393,17 +405,17 @@ static void type_pattern_init(void)
 
 static void type_pattern_destroy(void)
 {
-    struct pwui_type_pattern_data *d = pwui_type_data;
-    list_clear(&d->dots, fb_remove_item);
-    list_clear(&d->active_dots, fb_remove_item);
-    list_clear(&d->complete_lines, fb_remove_item);
+    struct pwui_type_pattern_data *d = (pwui_type_pattern_data*)pwui_type_data;
+    list_clear(&d->dots, (callback)fb_remove_item);
+    list_clear(&d->active_dots, (callback)fb_remove_item);
+    list_clear(&d->complete_lines, (callback)fb_remove_item);
     fb_rm_line(d->cur_line);
     free(d);
 
     pwui_type_data = NULL;
 }
 
-static void init_ui(int pwtype)
+static void init_ui(int pwtype, bool isFbe)
 {
     fb_add_rect_lvl(100, 0, 0, fb_width, HEADER_HEIGHT, C_HIGHLIGHT_BG);
 
@@ -423,7 +435,7 @@ static void init_ui(int pwtype)
 
     if(!mrom_is_second_boot())
     {
-        boot_primary_btn = mzalloc(sizeof(button));
+        boot_primary_btn = (button*)mzalloc(sizeof(button));
         boot_primary_btn->w = fb_width*0.30;
         boot_primary_btn->h = HEADER_HEIGHT;
         boot_primary_btn->x = fb_width - boot_primary_btn->w;
@@ -434,7 +446,7 @@ static void init_ui(int pwtype)
     }
     else
     {
-        boot_primary_btn = mzalloc(sizeof(button));
+        boot_primary_btn = (button*)mzalloc(sizeof(button));
         boot_primary_btn->w = fb_width*0.30;
         boot_primary_btn->h = HEADER_HEIGHT;
         boot_primary_btn->x = fb_width - boot_primary_btn->w;
@@ -448,10 +460,10 @@ static void init_ui(int pwtype)
     {
         case CRYPT_TYPE_PASSWORD:
         case CRYPT_TYPE_PIN:
-            type_pass_init(pwtype);
+            type_pass_init(pwtype, isFbe);
             break;
         case CRYPT_TYPE_PATTERN:
-            type_pattern_init();
+            type_pattern_init(isFbe);
             break;
         default:
             t = fb_add_text(0, 0, C_TEXT, SIZE_NORMAL, "Error: unknown password type %d", pwtype);
@@ -479,7 +491,7 @@ static void destroy_ui(int pwtype)
 
 static int pw_ui_shutdown_counter_touch_handler(UNUSED touch_event *ev, void *data)
 {
-    int *shutdown_counter = data;
+    int *shutdown_counter = (int*)data;
     if(*shutdown_counter == 0)
         return -1;
 
@@ -489,7 +501,7 @@ static int pw_ui_shutdown_counter_touch_handler(UNUSED touch_event *ev, void *da
     return -1;
 }
 
-int pw_ui_run(int pwtype)
+int pw_ui_run(int pwtype, bool isFbe)
 {
     int shutdown_counter = 0;
 
@@ -505,7 +517,7 @@ int pw_ui_run(int pwtype)
     workers_start();
     anim_init(1.f);
 
-    init_ui(pwtype);
+    init_ui(pwtype, isFbe);
 
     start_input_thread();
     add_touch_handler(pw_ui_shutdown_counter_touch_handler, &shutdown_counter);
